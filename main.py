@@ -4,16 +4,17 @@ import random
 import requests
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
 MODEL = "gemini-3.8-flash"
+COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+
 
 def ask_ai():
     prompt = """
 You are the content creator for PromptVerse India.
 
-Create ONE short Instagram Reel idea about AI, AI tools, AI prompts,
-AI photo editing or AI video tricks.
+Create ONE short Instagram Reel idea about AI, AI tools,
+AI prompts, AI photo editing or AI video tricks.
 
 Return ONLY valid JSON:
 {
@@ -24,15 +25,19 @@ Return ONLY valid JSON:
   "hashtags": "..."
 }
 
-The script should be Hindi/Hinglish, interesting and suitable for a
-20-30 second Reel.
+Rules:
+- Script must be Hindi/Hinglish.
+- 20-30 seconds.
+- Simple and engaging.
+- search_query must be a simple English video-search phrase.
 """
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
-
     response = requests.post(
-        url,
-        params={"key": GEMINI_API_KEY},
+        f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
+        headers={
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        },
         json={
             "contents": [
                 {
@@ -57,55 +62,63 @@ The script should be Hindi/Hinglish, interesting and suitable for a
 
 
 def find_video(query):
-    url = "https://api.pexels.com/v1/videos/search"
-
-    headers = {
-        "Authorization": PEXELS_API_KEY
-    }
-
     params = {
-        "query": query,
-        "orientation": "portrait",
-        "size": "medium",
-        "per_page": 10
+        "action": "query",
+        "format": "json",
+        "generator": "search",
+        "gsrsearch": query,
+        "gsrnamespace": 6,
+        "gsrlimit": 20,
+        "prop": "imageinfo",
+        "iiprop": "url|mime|extmetadata"
     }
 
     response = requests.get(
-        url,
-        headers=headers,
+        COMMONS_API,
         params=params,
         timeout=60
     )
 
     response.raise_for_status()
 
-    videos = response.json().get("videos", [])
+    data = response.json()
+
+    pages = data.get("query", {}).get("pages", {})
+
+    videos = []
+
+    for page in pages.values():
+        info = page.get("imageinfo", [])
+
+        if not info:
+            continue
+
+        file_info = info[0]
+        mime = file_info.get("mime", "")
+
+        if mime.startswith("video/"):
+            videos.append({
+                "title": page.get("title", ""),
+                "url": file_info.get("url", ""),
+                "description_url":
+                    "https://commons.wikimedia.org/wiki/" +
+                    page.get("title", "").replace(" ", "_")
+            })
 
     if not videos:
-        raise Exception("No Pexels video found.")
+        raise Exception("No suitable Wikimedia Commons video found.")
 
     return random.choice(videos)
 
 
 def download_video(video):
-    files = video.get("video_files", [])
+    url = video["url"]
 
-    portrait_files = [
-        f for f in files
-        if f.get("width", 0) > 0 and f.get("height", 0) > f.get("width", 0)
-    ]
-
-    if not portrait_files:
-        portrait_files = files
-
-    file = max(
-        portrait_files,
-        key=lambda x: x.get("width", 0) * x.get("height", 0)
+    response = requests.get(
+        url,
+        timeout=180
     )
 
-    url = file["link"]
-
-    response = requests.get(url, timeout=120)
     response.raise_for_status()
 
     with open("source.mp4", "wb") as f:
@@ -116,21 +129,27 @@ def main():
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is missing.")
 
-    if not PEXELS_API_KEY:
-        raise Exception("PEXELS_API_KEY is missing.")
-
     content = ask_ai()
 
     print("TOPIC:", content["topic"])
     print("SCRIPT:", content["script"])
     print("CAPTION:", content["caption"])
+    print("HASHTAGS:", content["hashtags"])
 
     with open("content.json", "w", encoding="utf-8") as f:
-        json.dump(content, f, ensure_ascii=False, indent=2)
+        json.dump(
+            content,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
 
-    video = find_video(content["search_query"])
+    video = find_video(
+        content["search_query"]
+    )
 
-    print("Pexels video:", video["url"])
+    print("VIDEO:", video["title"])
+    print("SOURCE:", video["description_url"])
 
     download_video(video)
 
