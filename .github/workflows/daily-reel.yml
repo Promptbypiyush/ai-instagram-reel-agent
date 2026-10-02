@@ -23,5 +23,7 @@ jobs:
           pip install requests moviepy pillow
 
       - name: Run AI Reel Agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python main.py
