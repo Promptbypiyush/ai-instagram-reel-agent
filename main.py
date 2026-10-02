@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import time
 import requests
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -32,33 +33,89 @@ Rules:
 - search_query must be a simple English video-search phrase.
 """
 
-    response = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
-        headers={
-            "x-goog-api-key": GEMINI_API_KEY,
-            "Content-Type": "application/json"
-        },
-        json={
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "responseMimeType": "application/json"
-            }
-        },
-        timeout=60
+    url = (
+        f"https://generativelanguage.googleapis.com/"
+        f"v1beta/models/{MODEL}:generateContent"
     )
 
-    response.raise_for_status()
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json"
+        }
+    }
 
-    data = response.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    headers = {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json"
+    }
 
-    return json.loads(text)
+    # Retry only temporary Gemini server/rate-limit errors.
+    # Maximum 5 attempts.
+    for attempt in range(1, 6):
+        try:
+            print(f"Gemini request attempt {attempt}/5")
+
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                text = (
+                    data["candidates"][0]
+                    ["content"]["parts"][0]["text"]
+                )
+
+                return json.loads(text)
+
+            if response.status_code in (429, 500, 502, 503, 504):
+                print(
+                    f"Gemini temporary error: "
+                    f"HTTP {response.status_code}"
+                )
+
+                if attempt < 5:
+                    wait_time = attempt * 10
+                    print(
+                        f"Waiting {wait_time} seconds "
+                        f"before retry..."
+                    )
+                    time.sleep(wait_time)
+                    continue
+
+            response.raise_for_status()
+
+        except (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError
+        ) as e:
+            print(f"Gemini connection error: {e}")
+
+            if attempt < 5:
+                wait_time = attempt * 10
+                print(
+                    f"Waiting {wait_time} seconds "
+                    f"before retry..."
+                )
+                time.sleep(wait_time)
+                continue
+
+            raise
+
+    raise Exception(
+        "Gemini API failed after 5 attempts."
+    )
 
 
 def find_video(query):
@@ -106,7 +163,9 @@ def find_video(query):
             })
 
     if not videos:
-        raise Exception("No suitable Wikimedia Commons video found.")
+        raise Exception(
+            "No suitable Wikimedia Commons video found."
+        )
 
     return random.choice(videos)
 
@@ -127,7 +186,9 @@ def download_video(video):
 
 def main():
     if not GEMINI_API_KEY:
-        raise Exception("GEMINI_API_KEY is missing.")
+        raise Exception(
+            "GEMINI_API_KEY is missing."
+        )
 
     content = ask_ai()
 
@@ -136,7 +197,11 @@ def main():
     print("CAPTION:", content["caption"])
     print("HASHTAGS:", content["hashtags"])
 
-    with open("content.json", "w", encoding="utf-8") as f:
+    with open(
+        "content.json",
+        "w",
+        encoding="utf-8"
+    ) as f:
         json.dump(
             content,
             f,
