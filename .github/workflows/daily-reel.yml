@@ -19,38 +19,15 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Run AI Reel Agent
+      - name: Run Reel Agent with Automatic Retry
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          set +e
-
-          for attempt in 1 2 3 4 5
-          do
-            echo "========================================"
-            echo "AI Reel Agent attempt $attempt of 5"
-            echo "========================================"
-
-            python main.py
-
-            STATUS=$?
-
-            if [ "$STATUS" -eq 0 ]; then
-              echo "AI Reel Agent completed successfully."
-              exit 0
-            fi
-
-            if [ "$attempt" -lt 5 ]; then
-              WAIT=$((attempt * 15))
-              echo "Agent failed with exit code $STATUS."
-              echo "Waiting ${WAIT} seconds before retry..."
-              sleep "$WAIT"
-            else
-              echo "AI Reel Agent failed after 5 attempts."
-              exit "$STATUS"
-            fi
+          for i in 1 2 3 4; do
+            python main.py && exit 0
+            echo "Attempt $i failed. Retrying..."
+            sleep $((i * 30))
           done
+          exit 1
