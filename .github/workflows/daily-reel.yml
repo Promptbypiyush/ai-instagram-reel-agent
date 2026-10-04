@@ -18,8 +18,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python packages
+        run: |
+          pip install -r requirements.txt
 
       - name: Run Reel Agent with Automatic Retry
         env:
