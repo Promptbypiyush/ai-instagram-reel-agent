@@ -23,15 +23,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install Python packages
+      - name: Install Python dependencies
         run: |
           pip install -r requirements.txt
 
       - name: Run Reel Agent with Automatic Retry
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
         run: |
-          for i in 1 2 3 4; do
+          for i in 1 2 3 4
+          do
             python main.py && exit 0
             echo "Attempt $i failed. Retrying..."
             sleep $((i * 30))
