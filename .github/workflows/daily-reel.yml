@@ -13,31 +13,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
 
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
 
-      - name: Check Instagram Configuration
+      - name: Check Instagram credentials
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
         run: |
-          if [ -z "$INSTAGRAM_ACCESS_TOKEN" ]; then
-            echo "ERROR: INSTAGRAM_ACCESS_TOKEN secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$INSTAGRAM_USER_ID" ]; then
-            echo "ERROR: INSTAGRAM_USER_ID secret is missing."
-            exit 1
-          fi
-
-          echo "Instagram credentials are loaded."
+          test -n "$GEMINI_API_KEY" || (echo "GEMINI_API_KEY is missing" && exit 1)
+          test -n "$INSTAGRAM_ACCESS_TOKEN" || (echo "INSTAGRAM_ACCESS_TOKEN is missing" && exit 1)
+          test -n "$INSTAGRAM_USER_ID" || (echo "INSTAGRAM_USER_ID is missing" && exit 1)
+          echo "All required secrets are present."
 
       - name: Run Reel Agent with Automatic Retry
         env:
@@ -46,9 +46,11 @@ jobs:
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
         run: |
           for i in 1 2 3 4; do
+            echo "Starting attempt $i..."
             python main.py && exit 0
             echo "Attempt $i failed. Retrying..."
             sleep $((i * 30))
           done
 
+          echo "All 4 attempts failed."
           exit 1
