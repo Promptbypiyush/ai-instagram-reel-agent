@@ -43,22 +43,26 @@ MAX_VIDEO_BYTES = 50 * 1024 * 1024
 TARGET_MAX_BYTES = 45 * 1024 * 1024
 
 REEL_SECONDS = 15
+
 POLL_SECONDS = 15
 MAX_POLL_ATTEMPTS = 40
 
 OUTPUT_VIDEO = "reel.mp4"
 
 WORK_DIR = Path("reel_assets")
-WORK_DIR.mkdir(exist_ok=True)
 
 
 # ============================================================
-# GENERAL HELPERS
+# BASIC HELPERS
 # ============================================================
 
 def run_command(command):
+
     print()
-    print("Running:", " ".join(command))
+    print(
+        "Running:",
+        " ".join(command)
+    )
 
     result = subprocess.run(
         command,
@@ -70,23 +74,28 @@ def run_command(command):
     print(result.stdout)
 
     if result.returncode != 0:
+
         raise RuntimeError(
-            f"Command failed with exit code {result.returncode}"
+            "Command failed with exit code "
+            + str(result.returncode)
         )
 
     return result.stdout
 
 
 def check_dependencies():
+
     print()
     print("Checking dependencies...")
 
     if not shutil.which("ffmpeg"):
+
         raise RuntimeError(
             "ffmpeg is not installed."
         )
 
     if not shutil.which("ffprobe"):
+
         raise RuntimeError(
             "ffprobe is not installed."
         )
@@ -102,37 +111,34 @@ def check_dependencies():
     )
 
 
-def cleanup_old_files():
-    for path in [
-        Path(OUTPUT_VIDEO),
-        WORK_DIR
-    ]:
-        if path.exists():
+def cleanup_files():
 
-            if path.is_dir():
+    output_path = Path(
+        OUTPUT_VIDEO
+    )
 
-                for item in path.iterdir():
+    if output_path.exists():
 
-                    try:
-                        if item.is_file():
-                            item.unlink()
-                        elif item.is_dir():
-                            shutil.rmtree(item)
-                    except OSError:
-                        pass
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
 
-            else:
+    if WORK_DIR.exists():
 
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+        try:
+            shutil.rmtree(WORK_DIR)
+        except OSError:
+            pass
 
-    WORK_DIR.mkdir(exist_ok=True)
+    WORK_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
 
 # ============================================================
-# GEMINI
+# GEMINI AI
 # ============================================================
 
 def ask_ai():
@@ -153,7 +159,7 @@ or useful AI websites.
 
 Return ONLY valid JSON.
 
-Exactly this structure:
+Use exactly this structure:
 
 {
   "topic": "short topic",
@@ -162,20 +168,23 @@ Exactly this structure:
   "hashtags": "#AITools #AIHacks #PromptVerseIndia"
 }
 
-Important rules:
+Rules:
 
 - Use Roman Hinglish only.
-- Do NOT use Devanagari Hindi.
-- Script should be short and engaging.
-- Keep it easy for Indian viewers.
+- Do not use Devanagari Hindi.
+- Keep the script short.
+- Make it useful and engaging.
+- Keep it suitable for Indian viewers.
 - Avoid fake claims.
-- Avoid markdown.
+- Do not use markdown.
 - Do not put anything outside JSON.
 """
 
     url = (
         "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{GEMINI_MODEL}:generateContent"
+        "v1beta/models/"
+        + GEMINI_MODEL
+        + ":generateContent"
     )
 
     payload = {
@@ -198,7 +207,9 @@ Important rules:
 
         print()
         print(
-            f"Gemini request attempt {attempt}/5"
+            "Gemini request attempt "
+            + str(attempt)
+            + "/5"
         )
 
         try:
@@ -210,13 +221,13 @@ Important rules:
                 timeout=90
             )
 
-            if response.status_code in {
+            if response.status_code in [
                 429,
                 500,
                 502,
                 503,
                 504
-            }:
+            ]:
 
                 print(
                     "Temporary Gemini error:",
@@ -228,10 +239,14 @@ Important rules:
                     wait_time = attempt * 10
 
                     print(
-                        f"Waiting {wait_time} seconds..."
+                        "Waiting "
+                        + str(wait_time)
+                        + " seconds..."
                     )
 
-                    time.sleep(wait_time)
+                    time.sleep(
+                        wait_time
+                    )
 
                     continue
 
@@ -246,7 +261,6 @@ Important rules:
 
             text = text.strip()
 
-            # Remove markdown fences if Gemini adds them.
             if text.startswith("```"):
 
                 text = text.replace(
@@ -264,31 +278,38 @@ Important rules:
 
             result = json.loads(text)
 
-            required = [
+            required_keys = [
                 "topic",
                 "script",
                 "caption",
                 "hashtags"
             ]
 
-            for key in required:
+            for key in required_keys:
 
                 if not result.get(key):
 
                     raise RuntimeError(
-                        f"Gemini JSON missing: {key}"
+                        "Gemini JSON missing: "
+                        + key
                     )
 
             print()
-            print("Generated topic:")
-            print(result["topic"])
+            print(
+                "AI Topic:",
+                result["topic"]
+            )
 
             print()
-            print("Generated script:")
-            print(result["script"])
+            print(
+                "AI Script:",
+                result["script"]
+            )
 
             print()
-            print("Gemini content generated successfully.")
+            print(
+                "Gemini content generated successfully."
+            )
 
             return result
 
@@ -318,10 +339,14 @@ Important rules:
             wait_time = attempt * 10
 
             print(
-                f"Retrying in {wait_time} seconds..."
+                "Retrying in "
+                + str(wait_time)
+                + " seconds..."
             )
 
-            time.sleep(wait_time)
+            time.sleep(
+                wait_time
+            )
 
     raise RuntimeError(
         "Gemini failed after 5 attempts."
@@ -329,28 +354,35 @@ Important rules:
 
 
 # ============================================================
-# IMAGE / FONT HELPERS
+# FONT
 # ============================================================
 
-def find_font(size, bold=False):
-
-    candidates = []
+def find_font(
+    size,
+    bold=False
+):
 
     if bold:
 
-        candidates.extend([
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
-        ])
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/"
+            "DejaVuSans-Bold.ttf",
+
+            "/usr/share/fonts/truetype/liberation2/"
+            "LiberationSans-Bold.ttf"
+        ]
 
     else:
 
-        candidates.extend([
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
-        ])
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/"
+            "DejaVuSans.ttf",
 
-    for font_path in candidates:
+            "/usr/share/fonts/truetype/liberation2/"
+            "LiberationSans-Regular.ttf"
+        ]
+
+    for font_path in font_paths:
 
         if os.path.exists(font_path):
 
@@ -362,11 +394,23 @@ def find_font(size, bold=False):
     return ImageFont.load_default()
 
 
-def make_gradient(width, height, top_color, bottom_color):
+# ============================================================
+# GRADIENT BACKGROUND
+# ============================================================
+
+def make_gradient(
+    width,
+    height,
+    top_color,
+    bottom_color
+):
 
     image = Image.new(
         "RGB",
-        (width, height)
+        (
+            width,
+            height
+        )
     )
 
     pixels = image.load()
@@ -378,28 +422,37 @@ def make_gradient(width, height, top_color, bottom_color):
             height - 1
         )
 
-        r = int(
+        red = int(
             top_color[0] * (1 - ratio)
             + bottom_color[0] * ratio
         )
 
-        g = int(
+        green = int(
             top_color[1] * (1 - ratio)
             + bottom_color[1] * ratio
         )
 
-        b = int(
+        blue = int(
             top_color[2] * (1 - ratio)
             + bottom_color[2] * ratio
         )
 
-        row_color = (r, g, b)
+        current_color = (
+            red,
+            green,
+            blue
+        )
 
         for x in range(width):
-            pixels[x, y] = row_color
+
+            pixels[x, y] = current_color
 
     return image
 
+
+# ============================================================
+# CENTER TEXT
+# ============================================================
 
 def draw_centered_text(
     draw,
@@ -411,13 +464,10 @@ def draw_centered_text(
     fill
 ):
 
-    wrapped = textwrap.wrap(
+    lines = textwrap.wrap(
         str(text),
         width=max_chars
     )
-
-    if not wrapped:
-        return top_y
 
     line_height = int(
         font.size * 1.25
@@ -425,16 +475,16 @@ def draw_centered_text(
 
     current_y = top_y
 
-    for line in wrapped:
+    for line in lines:
 
-        bbox = draw.textbbox(
+        box = draw.textbbox(
             (0, 0),
             line,
             font=font
         )
 
         text_width = (
-            bbox[2] - bbox[0]
+            box[2] - box[0]
         )
 
         x = (
@@ -442,7 +492,10 @@ def draw_centered_text(
         ) // 2
 
         draw.text(
-            (x, current_y),
+            (
+                x,
+                current_y
+            ),
             line,
             font=font,
             fill=fill,
@@ -456,7 +509,7 @@ def draw_centered_text(
 
 
 # ============================================================
-# CREATE ORIGINAL VISUAL FRAMES
+# CREATE ORIGINAL VISUALS
 # ============================================================
 
 def create_visual_frames(content):
@@ -477,61 +530,75 @@ def create_visual_frames(content):
         content["script"]
     ).strip()
 
-    hashtag_text = str(
+    hashtags = str(
         content["hashtags"]
     ).strip()
 
     title_font = find_font(
-        82,
-        bold=True
-    )
-
-    subtitle_font = find_font(
-        48,
-        bold=False
+        78,
+        True
     )
 
     script_font = find_font(
-        56,
-        bold=True
+        52,
+        True
+    )
+
+    subtitle_font = find_font(
+        46,
+        False
     )
 
     small_font = find_font(
-        38,
-        bold=False
+        36,
+        False
     )
 
-    frame_paths = []
+    frames = []
 
-    # --------------------------------------------------------
+    # ========================================================
     # FRAME 1
-    # --------------------------------------------------------
+    # ========================================================
 
     image = make_gradient(
         width,
         height,
         (12, 18, 45),
-        (62, 24, 94)
+        (70, 25, 100)
     )
 
-    draw = ImageDraw.Draw(image)
-
-    # Decorative circles.
-    draw.ellipse(
-        (-180, -180, 360, 360),
-        fill=(80, 70, 180)
+    draw = ImageDraw.Draw(
+        image
     )
 
     draw.ellipse(
-        (800, 1450, 1250, 1900),
+        (
+            -180,
+            -180,
+            360,
+            360
+        ),
+        fill=(70, 70, 170)
+    )
+
+    draw.ellipse(
+        (
+            800,
+            1450,
+            1250,
+            1900
+        ),
         fill=(30, 120, 170)
     )
 
     draw.text(
-        (55, 80),
+        (
+            55,
+            90
+        ),
         "PROMPTVERSE INDIA",
         font=small_font,
-        fill=(235, 235, 235)
+        fill=(240, 240, 240)
     )
 
     draw_centered_text(
@@ -549,41 +616,55 @@ def create_visual_frames(content):
         "AI TIP OF THE DAY",
         subtitle_font,
         width,
-        1050,
+        1080,
         28,
         (220, 230, 255)
     )
 
-    frame1 = WORK_DIR / "frame1.png"
-
-    image.save(
-        frame1,
-        quality=95
+    frame1 = (
+        WORK_DIR /
+        "frame1.png"
     )
 
-    frame_paths.append(frame1)
+    image.save(
+        frame1
+    )
 
-    # --------------------------------------------------------
+    frames.append(
+        frame1
+    )
+
+    # ========================================================
     # FRAME 2
-    # --------------------------------------------------------
+    # ========================================================
 
     image = make_gradient(
         width,
         height,
-        (17, 40, 48),
-        (15, 87, 90)
+        (15, 40, 50),
+        (10, 90, 90)
     )
 
-    draw = ImageDraw.Draw(image)
+    draw = ImageDraw.Draw(
+        image
+    )
 
     draw.rounded_rectangle(
-        (55, 280, 1025, 1660),
+        (
+            55,
+            280,
+            1025,
+            1660
+        ),
         radius=45,
         fill=(8, 20, 25)
     )
 
     draw.text(
-        (90, 360),
+        (
+            90,
+            360
+        ),
         "TRY THIS",
         font=title_font,
         fill=(255, 255, 255)
@@ -594,30 +675,37 @@ def create_visual_frames(content):
         script,
         script_font,
         900,
-        580,
+        590,
         22,
         (255, 255, 255)
     )
 
     draw.text(
-        (90, 1490),
+        (
+            90,
+            1500
+        ),
         "Follow @promptverseindia",
         font=small_font,
         fill=(200, 240, 240)
     )
 
-    frame2 = WORK_DIR / "frame2.png"
-
-    image.save(
-        frame2,
-        quality=95
+    frame2 = (
+        WORK_DIR /
+        "frame2.png"
     )
 
-    frame_paths.append(frame2)
+    image.save(
+        frame2
+    )
 
-    # --------------------------------------------------------
+    frames.append(
+        frame2
+    )
+
+    # ========================================================
     # FRAME 3
-    # --------------------------------------------------------
+    # ========================================================
 
     image = make_gradient(
         width,
@@ -626,10 +714,15 @@ def create_visual_frames(content):
         (105, 35, 60)
     )
 
-    draw = ImageDraw.Draw(image)
+    draw = ImageDraw.Draw(
+        image
+    )
 
     draw.text(
-        (55, 100),
+        (
+            55,
+            100
+        ),
         "SAVE THIS REEL",
         font=title_font,
         fill=(255, 255, 255)
@@ -637,7 +730,7 @@ def create_visual_frames(content):
 
     draw_centered_text(
         draw,
-        hashtag_text,
+        hashtags,
         subtitle_font,
         width,
         650,
@@ -655,29 +748,33 @@ def create_visual_frames(content):
         (255, 255, 255)
     )
 
-    frame3 = WORK_DIR / "frame3.png"
+    frame3 = (
+        WORK_DIR /
+        "frame3.png"
+    )
 
     image.save(
-        frame3,
-        quality=95
+        frame3
     )
 
-    frame_paths.append(frame3)
+    frames.append(
+        frame3
+    )
 
     print(
-        "Created",
-        len(frame_paths),
-        "visual frames."
+        "Created 3 visual frames."
     )
 
-    return frame_paths
+    return frames
 
 
 # ============================================================
-# BUILD MP4 WITH FFMPEG
+# CREATE MP4
 # ============================================================
 
-def create_reel(frame_paths):
+def create_reel(
+    frame_paths
+):
 
     print()
     print(
@@ -687,7 +784,7 @@ def create_reel(frame_paths):
     if len(frame_paths) != 3:
 
         raise RuntimeError(
-            "Expected 3 visual frames."
+            "Expected exactly 3 frames."
         )
 
     frame1 = str(
@@ -728,19 +825,28 @@ def create_reel(frame_paths):
         frame3,
 
         "-filter_complex",
-        (
-            "[0:v]scale=1080:1920:force_original_aspect_ratio="
-            "decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
-            "setsar=1[v0];"
-            "[1:v]scale=1080:1920:force_original_aspect_ratio="
-            "decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
-            "setsar=1[v1];"
-            "[2:v]scale=1080:1920:force_original_aspect_ratio="
-            "decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
-            "setsar=1[v2];"
-            "[v0][v1][v2]concat=n=3:v=1:a=0,"
-            "format=yuv420p[outv]"
-        ),
+
+        "[0:v]"
+        "scale=1080:1920:"
+        "force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+        "setsar=1[v0];"
+
+        "[1:v]"
+        "scale=1080:1920:"
+        "force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+        "setsar=1[v1];"
+
+        "[2:v]"
+        "scale=1080:1920:"
+        "force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+        "setsar=1[v2];"
+
+        "[v0][v1][v2]"
+        "concat=n=3:v=1:a=0,"
+        "format=yuv420p[outv]",
 
         "-map",
         "[outv]",
@@ -774,7 +880,9 @@ def create_reel(frame_paths):
         OUTPUT_VIDEO
     ]
 
-    run_command(command)
+    run_command(
+        command
+    )
 
     if not os.path.exists(
         OUTPUT_VIDEO
@@ -804,7 +912,7 @@ def create_reel(frame_paths):
     if file_size > MAX_VIDEO_BYTES:
 
         raise RuntimeError(
-            "Final Reel is larger than 50 MB."
+            "Final Reel is over 50 MB."
         )
 
     print(
@@ -815,14 +923,20 @@ def create_reel(frame_paths):
 
 
 # ============================================================
-# INSTAGRAM API HELPERS
+# INSTAGRAM API
 # ============================================================
 
-def instagram_url(path):
+def instagram_url(
+    path
+):
 
     return (
-        f"https://{INSTAGRAM_API_HOST}/"
-        f"{API_VERSION}/{path}"
+        "https://"
+        + INSTAGRAM_API_HOST
+        + "/"
+        + API_VERSION
+        + "/"
+        + path
     )
 
 
@@ -846,7 +960,7 @@ def check_instagram_credentials():
         )
 
     print(
-        "Instagram secrets are present."
+        "Instagram credentials found."
     )
 
 
@@ -863,7 +977,8 @@ def verify_instagram_user():
 
     params = {
         "fields": "id,username",
-        "access_token": INSTAGRAM_ACCESS_TOKEN
+        "access_token":
+            INSTAGRAM_ACCESS_TOKEN
     }
 
     response = requests.get(
@@ -882,10 +997,7 @@ def verify_instagram_user():
             response.text
         )
 
-        raise RuntimeError(
-            "Instagram User ID or access token "
-            "could not be verified."
-        )
+        response.raise_for_status()
 
     data = response.json()
 
@@ -906,7 +1018,9 @@ def verify_instagram_user():
 # CREATE REEL CONTAINER
 # ============================================================
 
-def create_reel_container(caption):
+def create_reel_container(
+    caption
+):
 
     print()
     print(
@@ -914,7 +1028,8 @@ def create_reel_container(caption):
     )
 
     url = instagram_url(
-        f"{INSTAGRAM_USER_ID}/media"
+        INSTAGRAM_USER_ID
+        + "/media"
     )
 
     payload = {
@@ -922,7 +1037,8 @@ def create_reel_container(caption):
         "upload_type": "resumable",
         "caption": caption,
         "share_to_feed": "true",
-        "access_token": INSTAGRAM_ACCESS_TOKEN
+        "access_token":
+            INSTAGRAM_ACCESS_TOKEN
     }
 
     response = requests.post(
@@ -956,12 +1072,13 @@ def create_reel_container(caption):
     if not container_id:
 
         raise RuntimeError(
-            f"Instagram did not return "
-            f"a container ID: {data}"
+            "Instagram did not return "
+            "a container ID: "
+            + str(data)
         )
 
     print(
-        "Instagram container created:",
+        "Instagram container:",
         container_id
     )
 
@@ -978,7 +1095,7 @@ def create_reel_container(caption):
 
 
 # ============================================================
-# UPLOAD REEL VIDEO
+# UPLOAD VIDEO
 # ============================================================
 
 def upload_video_to_instagram(
@@ -999,7 +1116,7 @@ def upload_video_to_instagram(
 
     print()
     print(
-        "Uploading Reel video to Instagram..."
+        "Uploading Reel to Instagram..."
     )
 
     if upload_uri:
@@ -1011,13 +1128,15 @@ def upload_video_to_instagram(
         upload_url = (
             "https://rupload.facebook.com/"
             "ig-api-upload/"
-            f"{API_VERSION}/"
-            f"{container_id}"
+            + API_VERSION
+            + "/"
+            + container_id
         )
 
     headers = {
         "Authorization":
-            f"OAuth {INSTAGRAM_ACCESS_TOKEN}",
+            "OAuth "
+            + INSTAGRAM_ACCESS_TOKEN,
 
         "offset":
             "0",
@@ -1032,65 +1151,19 @@ def upload_video_to_instagram(
     with open(
         video_file,
         "rb"
-    ) as file:
+    ) as video:
 
         response = requests.post(
             upload_url,
             headers=headers,
-            data=file,
+            data=video,
             timeout=300
         )
 
-    if response.status_code not in {
+    if response.status_code not in [
         200,
         201
-    }:
+    ]:
 
         print(
-            "Instagram upload error:"
-        )
-
-        print(
-            response.text
-        )
-
-        response.raise_for_status()
-
-    print(
-        "Video upload completed."
-    )
-
-    print(
-        "Upload response:",
-        response.text
-    )
-
-
-# ============================================================
-# WAIT FOR INSTAGRAM PROCESSING
-# ============================================================
-
-def wait_for_container(container_id):
-
-    print()
-    print(
-        "Waiting for Instagram to process Reel..."
-    )
-
-    url = instagram_url(
-        container_id
-    )
-
-    params = {
-        "fields": "status_code,status",
-        "access_token": INSTAGRAM_ACCESS_TOKEN
-    }
-
-    for attempt in range(
-        1,
-        MAX_POLL_ATTEMPTS + 1
-    ):
-
-        print(
-            f"Processing check "
-            f"{attempt
+            "Instagram upload er
