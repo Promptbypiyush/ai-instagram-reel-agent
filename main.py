@@ -3,7 +3,11 @@ import json
 import time
 import shutil
 import subprocess
+import textwrap
+from pathlib import Path
+
 import requests
+from PIL import Image, ImageDraw, ImageFont
 
 
 # ============================================================
@@ -12,45 +16,48 @@ import requests
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-INSTAGRAM_ACCESS_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
-INSTAGRAM_USER_ID = os.environ.get("INSTAGRAM_USER_ID")
+INSTAGRAM_ACCESS_TOKEN = os.environ.get(
+    "INSTAGRAM_ACCESS_TOKEN"
+)
 
-# Facebook Login / Page based Instagram API:
+INSTAGRAM_USER_ID = os.environ.get(
+    "INSTAGRAM_USER_ID"
+)
+
 INSTAGRAM_API_HOST = os.environ.get(
     "INSTAGRAM_API_HOST",
     "graph.facebook.com"
 )
 
-API_VERSION = "v25.0"
+API_VERSION = os.environ.get(
+    "META_API_VERSION",
+    "v25.0"
+)
 
-GEMINI_MODEL = "gemini-3.8-flash"
-
-COMMONS_API = "https://commons.wikimedia.org/w/api.php"
-
-WIKIMEDIA_HEADERS = {
-    "User-Agent": "PromptVerseIndia-ReelAgent/1.0 (GitHub Actions)"
-}
-
-
-# ============================================================
-# 50 MB LIMIT
-# ============================================================
+GEMINI_MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-3.8-flash"
+)
 
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
+TARGET_MAX_BYTES = 45 * 1024 * 1024
 
-# Keep a small safety margin so Instagram never receives
-# a file right at the 50 MB boundary.
-TARGET_MAX_BYTES = 49 * 1024 * 1024
+REEL_SECONDS = 15
+POLL_SECONDS = 15
+MAX_POLL_ATTEMPTS = 40
 
-MAX_REEL_SECONDS = 60
-MIN_REEL_SECONDS = 3
+OUTPUT_VIDEO = "reel.mp4"
+
+WORK_DIR = Path("reel_assets")
+WORK_DIR.mkdir(exist_ok=True)
 
 
 # ============================================================
-# HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def run_command(command):
+    print()
     print("Running:", " ".join(command))
 
     result = subprocess.run(
@@ -70,37 +77,58 @@ def run_command(command):
     return result.stdout
 
 
-def check_ffmpeg():
+def check_dependencies():
+    print()
+    print("Checking dependencies...")
+
     if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg is not installed.")
+        raise RuntimeError(
+            "ffmpeg is not installed."
+        )
 
     if not shutil.which("ffprobe"):
-        raise RuntimeError("ffprobe is not installed.")
-
-    print("ffmpeg:", shutil.which("ffmpeg"))
-    print("ffprobe:", shutil.which("ffprobe"))
-
-
-def get_video_duration(video_path):
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        video_path
-    ]
-
-    output = run_command(command).strip()
-
-    try:
-        return float(output)
-    except ValueError:
         raise RuntimeError(
-            f"Could not determine video duration: {output}"
+            "ffprobe is not installed."
         )
+
+    print(
+        "ffmpeg:",
+        shutil.which("ffmpeg")
+    )
+
+    print(
+        "ffprobe:",
+        shutil.which("ffprobe")
+    )
+
+
+def cleanup_old_files():
+    for path in [
+        Path(OUTPUT_VIDEO),
+        WORK_DIR
+    ]:
+        if path.exists():
+
+            if path.is_dir():
+
+                for item in path.iterdir():
+
+                    try:
+                        if item.is_file():
+                            item.unlink()
+                        elif item.is_dir():
+                            shutil.rmtree(item)
+                    except OSError:
+                        pass
+
+            else:
+
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    WORK_DIR.mkdir(exist_ok=True)
 
 
 # ============================================================
@@ -109,47 +137,46 @@ def get_video_duration(video_path):
 
 def ask_ai():
 
+    if not GEMINI_API_KEY:
+
+        raise RuntimeError(
+            "GEMINI_API_KEY secret is missing."
+        )
+
     prompt = """
 You are the content creator for PromptVerse India.
 
-Create ONE short Instagram Reel idea about:
+Create ONE useful Instagram Reel about:
 AI, AI tools, AI prompts, AI photo editing,
-AI video tricks, productivity with AI, or useful AI websites.
+AI video tricks, productivity with AI,
+or useful AI websites.
 
 Return ONLY valid JSON.
 
-Exactly this format:
+Exactly this structure:
 
 {
   "topic": "short topic",
-  "script": "short Hinglish reel script",
+  "script": "short Roman Hinglish reel script",
   "caption": "Instagram caption",
   "hashtags": "#AITools #AIHacks #PromptVerseIndia"
 }
 
-Rules:
+Important rules:
 
-- Script should be short.
-- Use natural Indian Hinglish.
-- Make it useful and engaging.
+- Use Roman Hinglish only.
+- Do NOT use Devanagari Hindi.
+- Script should be short and engaging.
+- Keep it easy for Indian viewers.
 - Avoid fake claims.
 - Avoid markdown.
 - Do not put anything outside JSON.
 """
 
-    if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY secret is missing."
-        )
-
     url = (
         "https://generativelanguage.googleapis.com/"
         f"v1beta/models/{GEMINI_MODEL}:generateContent"
     )
-
-    params = {
-        "key": GEMINI_API_KEY
-    }
 
     payload = {
         "contents": [
@@ -163,8 +190,13 @@ Rules:
         ]
     }
 
+    params = {
+        "key": GEMINI_API_KEY
+    }
+
     for attempt in range(1, 6):
 
+        print()
         print(
             f"Gemini request attempt {attempt}/5"
         )
@@ -178,20 +210,21 @@ Rules:
                 timeout=90
             )
 
-            if response.status_code in [
+            if response.status_code in {
                 429,
                 500,
                 502,
                 503,
                 504
-            ]:
+            }:
 
                 print(
-                    "Gemini temporary error:",
+                    "Temporary Gemini error:",
                     response.status_code
                 )
 
                 if attempt < 5:
+
                     wait_time = attempt * 10
 
                     print(
@@ -240,21 +273,29 @@ Rules:
 
             for key in required:
 
-                if key not in result:
+                if not result.get(key):
+
                     raise RuntimeError(
                         f"Gemini JSON missing: {key}"
                     )
 
-            print(
-                "Gemini generated content successfully."
-            )
+            print()
+            print("Generated topic:")
+            print(result["topic"])
+
+            print()
+            print("Generated script:")
+            print(result["script"])
+
+            print()
+            print("Gemini content generated successfully.")
 
             return result
 
         except json.JSONDecodeError as error:
 
             print(
-                "Gemini returned invalid JSON:",
+                "Gemini JSON error:",
                 error
             )
 
@@ -268,7 +309,7 @@ Rules:
         except Exception as error:
 
             print(
-                "Gemini unexpected error:",
+                "Gemini error:",
                 error
             )
 
@@ -288,519 +329,493 @@ Rules:
 
 
 # ============================================================
-# WIKIMEDIA SEARCH
+# IMAGE / FONT HELPERS
 # ============================================================
 
-def find_video(search_text):
+def find_font(size, bold=False):
+
+    candidates = []
+
+    if bold:
+
+        candidates.extend([
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
+        ])
+
+    else:
+
+        candidates.extend([
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
+        ])
+
+    for font_path in candidates:
+
+        if os.path.exists(font_path):
+
+            return ImageFont.truetype(
+                font_path,
+                size
+            )
+
+    return ImageFont.load_default()
+
+
+def make_gradient(width, height, top_color, bottom_color):
+
+    image = Image.new(
+        "RGB",
+        (width, height)
+    )
+
+    pixels = image.load()
+
+    for y in range(height):
+
+        ratio = y / max(
+            1,
+            height - 1
+        )
+
+        r = int(
+            top_color[0] * (1 - ratio)
+            + bottom_color[0] * ratio
+        )
+
+        g = int(
+            top_color[1] * (1 - ratio)
+            + bottom_color[1] * ratio
+        )
+
+        b = int(
+            top_color[2] * (1 - ratio)
+            + bottom_color[2] * ratio
+        )
+
+        row_color = (r, g, b)
+
+        for x in range(width):
+            pixels[x, y] = row_color
+
+    return image
+
+
+def draw_centered_text(
+    draw,
+    text,
+    font,
+    width,
+    top_y,
+    max_chars,
+    fill
+):
+
+    wrapped = textwrap.wrap(
+        str(text),
+        width=max_chars
+    )
+
+    if not wrapped:
+        return top_y
+
+    line_height = int(
+        font.size * 1.25
+    )
+
+    current_y = top_y
+
+    for line in wrapped:
+
+        bbox = draw.textbbox(
+            (0, 0),
+            line,
+            font=font
+        )
+
+        text_width = (
+            bbox[2] - bbox[0]
+        )
+
+        x = (
+            width - text_width
+        ) // 2
+
+        draw.text(
+            (x, current_y),
+            line,
+            font=font,
+            fill=fill,
+            stroke_width=2,
+            stroke_fill=(0, 0, 0)
+        )
+
+        current_y += line_height
+
+    return current_y
+
+
+# ============================================================
+# CREATE ORIGINAL VISUAL FRAMES
+# ============================================================
+
+def create_visual_frames(content):
 
     print()
     print(
-        f"Searching Wikimedia Commons for: {search_text}"
+        "Creating original Reel visuals..."
     )
 
-    params = {
-        "action": "query",
-        "format": "json",
-        "generator": "search",
-        "gsrsearch": search_text,
-        "gsrnamespace": 6,
-        "gsrlimit": 30,
-        "prop": "imageinfo",
-        "iiprop": "url|mime|size|extmetadata"
-    }
+    width = 1080
+    height = 1920
 
-    try:
+    topic = str(
+        content["topic"]
+    ).strip()
 
-        response = requests.get(
-            COMMONS_API,
-            params=params,
-            headers=WIKIMEDIA_HEADERS,
-            timeout=30
-        )
+    script = str(
+        content["script"]
+    ).strip()
 
-        if response.status_code == 403:
+    hashtag_text = str(
+        content["hashtags"]
+    ).strip()
 
-            print(
-                "Wikimedia returned HTTP 403."
-            )
+    title_font = find_font(
+        82,
+        bold=True
+    )
 
-            return None
+    subtitle_font = find_font(
+        48,
+        bold=False
+    )
 
-        response.raise_for_status()
+    script_font = find_font(
+        56,
+        bold=True
+    )
 
-        data = response.json()
+    small_font = find_font(
+        38,
+        bold=False
+    )
 
-        pages = (
-            data.get("query", {})
-            .get("pages", {})
-        )
+    frame_paths = []
 
-        candidates = []
+    # --------------------------------------------------------
+    # FRAME 1
+    # --------------------------------------------------------
 
-        for page in pages.values():
+    image = make_gradient(
+        width,
+        height,
+        (12, 18, 45),
+        (62, 24, 94)
+    )
 
-            imageinfo = page.get(
-                "imageinfo",
-                []
-            )
+    draw = ImageDraw.Draw(image)
 
-            if not imageinfo:
-                continue
+    # Decorative circles.
+    draw.ellipse(
+        (-180, -180, 360, 360),
+        fill=(80, 70, 180)
+    )
 
-            info = imageinfo[0]
+    draw.ellipse(
+        (800, 1450, 1250, 1900),
+        fill=(30, 120, 170)
+    )
 
-            file_url = info.get("url")
+    draw.text(
+        (55, 80),
+        "PROMPTVERSE INDIA",
+        font=small_font,
+        fill=(235, 235, 235)
+    )
 
-            mime = (
-                info.get("mime", "")
-                .lower()
-            )
+    draw_centered_text(
+        draw,
+        topic,
+        title_font,
+        width,
+        500,
+        18,
+        (255, 255, 255)
+    )
 
-            file_size = info.get(
-                "size",
-                0
-            )
+    draw_centered_text(
+        draw,
+        "AI TIP OF THE DAY",
+        subtitle_font,
+        width,
+        1050,
+        28,
+        (220, 230, 255)
+    )
 
-            if not file_url:
-                continue
+    frame1 = WORK_DIR / "frame1.png"
 
-            # Only video MIME types.
-            is_video = mime.startswith(
-                "video/"
-            )
+    image.save(
+        frame1,
+        quality=95
+    )
 
-            # Also allow common extensions.
-            lower_url = file_url.lower()
+    frame_paths.append(frame1)
 
-            extension_video = (
-                lower_url.endswith(".mp4")
-                or lower_url.endswith(".webm")
-                or lower_url.endswith(".ogv")
-                or lower_url.endswith(".mov")
-                or lower_url.endswith(".m4v")
-            )
+    # --------------------------------------------------------
+    # FRAME 2
+    # --------------------------------------------------------
 
-            if not (
-                is_video or extension_video
-            ):
-                continue
+    image = make_gradient(
+        width,
+        height,
+        (17, 40, 48),
+        (15, 87, 90)
+    )
 
-            # IMPORTANT:
-            # Do not select a source larger than 50 MB.
-            if file_size > MAX_VIDEO_BYTES:
+    draw = ImageDraw.Draw(image)
 
-                print(
-                    "Skipping video larger than 50 MB:",
-                    round(
-                        file_size / 1024 / 1024,
-                        2
-                    ),
-                    "MB"
-                )
+    draw.rounded_rectangle(
+        (55, 280, 1025, 1660),
+        radius=45,
+        fill=(8, 20, 25)
+    )
 
-                continue
+    draw.text(
+        (90, 360),
+        "TRY THIS",
+        font=title_font,
+        fill=(255, 255, 255)
+    )
 
-            candidates.append(
-                {
-                    "url": file_url,
-                    "size": file_size,
-                    "mime": mime
-                }
-            )
+    draw_centered_text(
+        draw,
+        script,
+        script_font,
+        900,
+        580,
+        22,
+        (255, 255, 255)
+    )
 
-        # Prefer the smaller video.
-        candidates.sort(
-            key=lambda item: item["size"]
-        )
+    draw.text(
+        (90, 1490),
+        "Follow @promptverseindia",
+        font=small_font,
+        fill=(200, 240, 240)
+    )
 
-        if not candidates:
+    frame2 = WORK_DIR / "frame2.png"
 
-            print(
-                "No suitable Wikimedia video "
-                "under 50 MB found."
-            )
+    image.save(
+        frame2,
+        quality=95
+    )
 
-            return None
+    frame_paths.append(frame2)
 
-        selected = candidates[0]
+    # --------------------------------------------------------
+    # FRAME 3
+    # --------------------------------------------------------
 
-        print(
-            "Selected video:",
-            selected["url"]
-        )
+    image = make_gradient(
+        width,
+        height,
+        (45, 18, 15),
+        (105, 35, 60)
+    )
 
-        print(
-            "Source size:",
-            round(
-                selected["size"] / 1024 / 1024,
-                2
-            ),
-            "MB"
-        )
+    draw = ImageDraw.Draw(image)
 
-        return selected["url"]
+    draw.text(
+        (55, 100),
+        "SAVE THIS REEL",
+        font=title_font,
+        fill=(255, 255, 255)
+    )
 
-    except requests.RequestException as error:
+    draw_centered_text(
+        draw,
+        hashtag_text,
+        subtitle_font,
+        width,
+        650,
+        26,
+        (255, 235, 235)
+    )
 
-        print(
-            "Wikimedia request failed:",
-            error
-        )
+    draw_centered_text(
+        draw,
+        "More AI tips daily",
+        title_font,
+        width,
+        1150,
+        18,
+        (255, 255, 255)
+    )
 
-        return None
+    frame3 = WORK_DIR / "frame3.png"
 
-    except Exception as error:
+    image.save(
+        frame3,
+        quality=95
+    )
 
-        print(
-            "Wikimedia unexpected error:",
-            error
-        )
+    frame_paths.append(frame3)
 
-        return None
+    print(
+        "Created",
+        len(frame_paths),
+        "visual frames."
+    )
+
+    return frame_paths
 
 
 # ============================================================
-# DOWNLOAD SOURCE VIDEO
+# BUILD MP4 WITH FFMPEG
 # ============================================================
 
-def download_video(video_url):
-
-    output_file = "source_video"
+def create_reel(frame_paths):
 
     print()
     print(
-        "Downloading source video..."
+        "Creating final Instagram Reel..."
     )
 
-    try:
-
-        response = requests.get(
-            video_url,
-            headers=WIKIMEDIA_HEADERS,
-            stream=True,
-            timeout=90
-        )
-
-        if response.status_code == 403:
-
-            print(
-                "Wikimedia video returned HTTP 403."
-            )
-
-            return None
-
-        response.raise_for_status()
-
-        content_length = response.headers.get(
-            "Content-Length"
-        )
-
-        if content_length:
-
-            try:
-
-                expected_size = int(
-                    content_length
-                )
-
-                if expected_size > MAX_VIDEO_BYTES:
-
-                    print(
-                        "Download cancelled because "
-                        "source is over 50 MB."
-                    )
-
-                    return None
-
-            except ValueError:
-                pass
-
-        with open(
-            output_file,
-            "wb"
-        ) as file:
-
-            downloaded = 0
-
-            for chunk in response.iter_content(
-                chunk_size=1024 * 1024
-            ):
-
-                if not chunk:
-                    continue
-
-                downloaded += len(chunk)
-
-                # Safety limit.
-                if downloaded > MAX_VIDEO_BYTES:
-
-                    print(
-                        "Download exceeded 50 MB."
-                    )
-
-                    file.close()
-
-                    try:
-                        os.remove(
-                            output_file
-                        )
-                    except OSError:
-                        pass
-
-                    return None
-
-                file.write(chunk)
-
-                print(
-                    f"Downloaded "
-                    f"{downloaded / 1024 / 1024:.2f} MB"
-                )
-
-        if not os.path.exists(
-            output_file
-        ):
-            return None
-
-        final_size = os.path.getsize(
-            output_file
-        )
-
-        if final_size == 0:
-            return None
-
-        print(
-            "Source video downloaded:",
-            round(
-                final_size / 1024 / 1024,
-                2
-            ),
-            "MB"
-        )
-
-        return output_file
-
-    except requests.RequestException as error:
-
-        print(
-            "Video download failed:",
-            error
-        )
-
-        return None
-
-    except Exception as error:
-
-        print(
-            "Unexpected download error:",
-            error
-        )
-
-        return None
-
-
-# ============================================================
-# CREATE INSTAGRAM-READY REEL
-# ============================================================
-
-def create_reel(source_file):
-
-    print()
-    print(
-        "Creating Instagram Reel..."
-    )
-
-    duration = get_video_duration(
-        source_file
-    )
-
-    print(
-        "Source duration:",
-        round(duration, 2),
-        "seconds"
-    )
-
-    if duration < MIN_REEL_SECONDS:
+    if len(frame_paths) != 3:
 
         raise RuntimeError(
-            "Source video is shorter than 3 seconds."
+            "Expected 3 visual frames."
         )
 
-    # Use up to 60 seconds.
-    reel_duration = min(
-        duration,
-        MAX_REEL_SECONDS
+    frame1 = str(
+        frame_paths[0]
     )
 
-    output_file = "reel.mp4"
-
-    # Start around 45 MB target.
-    target_bytes = 45 * 1024 * 1024
-
-    # Keep audio at 128 kbps.
-    audio_bitrate = 128_000
-
-    # Calculate approximate video bitrate.
-    total_bitrate = (
-        target_bytes * 8
-    ) / reel_duration
-
-    video_bitrate = int(
-        total_bitrate - audio_bitrate
+    frame2 = str(
+        frame_paths[1]
     )
 
-    # Keep a sensible upper/lower range.
-    video_bitrate = max(
-        800_000,
-        min(
-            video_bitrate,
-            8_000_000
+    frame3 = str(
+        frame_paths[2]
+    )
+
+    command = [
+        "ffmpeg",
+        "-y",
+
+        "-loop",
+        "1",
+        "-t",
+        "5",
+        "-i",
+        frame1,
+
+        "-loop",
+        "1",
+        "-t",
+        "5",
+        "-i",
+        frame2,
+
+        "-loop",
+        "1",
+        "-t",
+        "5",
+        "-i",
+        frame3,
+
+        "-filter_complex",
+        (
+            "[0:v]scale=1080:1920:force_original_aspect_ratio="
+            "decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+            "setsar=1[v0];"
+            "[1:v]scale=1080:1920:force_original_aspect_ratio="
+            "decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+            "setsar=1[v1];"
+            "[2:v]scale=1080:1920:force_original_aspect_ratio="
+            "decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+            "setsar=1[v2];"
+            "[v0][v1][v2]concat=n=3:v=1:a=0,"
+            "format=yuv420p[outv]"
+        ),
+
+        "-map",
+        "[outv]",
+
+        "-r",
+        "30",
+
+        "-c:v",
+        "libx264",
+
+        "-preset",
+        "veryfast",
+
+        "-b:v",
+        "2200k",
+
+        "-maxrate",
+        "2500k",
+
+        "-bufsize",
+        "5000k",
+
+        "-pix_fmt",
+        "yuv420p",
+
+        "-movflags",
+        "+faststart",
+
+        "-an",
+
+        OUTPUT_VIDEO
+    ]
+
+    run_command(command)
+
+    if not os.path.exists(
+        OUTPUT_VIDEO
+    ):
+
+        raise RuntimeError(
+            "FFmpeg did not create reel.mp4."
         )
+
+    file_size = os.path.getsize(
+        OUTPUT_VIDEO
     )
+
+    file_mb = (
+        file_size /
+        1024 /
+        1024
+    )
+
+    print()
+    print(
+        "Final Reel size:",
+        round(file_mb, 2),
+        "MB"
+    )
+
+    if file_size > MAX_VIDEO_BYTES:
+
+        raise RuntimeError(
+            "Final Reel is larger than 50 MB."
+        )
 
     print(
-        "Initial video bitrate:",
-        round(
-            video_bitrate / 1_000_000,
-            2
-        ),
-        "Mbps"
+        "Reel is safely under 50 MB."
     )
 
-    # Try multiple times to guarantee <= 50 MB.
-    for attempt in range(1, 5):
-
-        print(
-            f"Re-encoding attempt "
-            f"{attempt}/4"
-        )
-
-        if os.path.exists(
-            output_file
-        ):
-
-            os.remove(
-                output_file
-            )
-
-        bitrate_k = max(
-            600,
-            int(
-                video_bitrate / 1000
-            )
-        )
-
-        command = [
-            "ffmpeg",
-            "-y",
-
-            "-ss",
-            "0",
-
-            "-i",
-            source_file,
-
-            "-t",
-            str(reel_duration),
-
-            # Vertical 9:16.
-            "-vf",
-            (
-                "scale=1080:1920:"
-                "force_original_aspect_ratio=increase,"
-                "crop=1080:1920"
-            ),
-
-            "-r",
-            "30",
-
-            "-c:v",
-            "libx264",
-
-            "-preset",
-            "veryfast",
-
-            "-b:v",
-            f"{bitrate_k}k",
-
-            "-maxrate",
-            f"{bitrate_k}k",
-
-            "-bufsize",
-            f"{bitrate_k * 2}k",
-
-            "-pix_fmt",
-            "yuv420p",
-
-            "-profile:v",
-            "high",
-
-            "-level",
-            "4.1",
-
-            "-c:a",
-            "aac",
-
-            "-b:a",
-            "128k",
-
-            "-ar",
-            "48000",
-
-            "-ac",
-            "2",
-
-            # Put moov atom at beginning.
-            "-movflags",
-            "+faststart",
-
-            output_file
-        ]
-
-        run_command(command)
-
-        if not os.path.exists(
-            output_file
-        ):
-            raise RuntimeError(
-                "ffmpeg did not create reel.mp4"
-            )
-
-        output_size = os.path.getsize(
-            output_file
-        )
-
-        output_mb = (
-            output_size /
-            1024 /
-            1024
-        )
-
-        print(
-            "Final Reel size:",
-            round(output_mb, 2),
-            "MB"
-        )
-
-        if output_size <= TARGET_MAX_BYTES:
-
-            print(
-                "Reel is safely under 50 MB."
-            )
-
-            return output_file
-
-        # Reduce bitrate for next attempt.
-        video_bitrate = int(
-            video_bitrate * 0.72
-        )
-
-    raise RuntimeError(
-        "Could not create a Reel under 50 MB."
-    )
+    return OUTPUT_VIDEO
 
 
 # ============================================================
-# INSTAGRAM API
+# INSTAGRAM API HELPERS
 # ============================================================
 
 def instagram_url(path):
@@ -812,6 +827,11 @@ def instagram_url(path):
 
 
 def check_instagram_credentials():
+
+    print()
+    print(
+        "Checking Instagram credentials..."
+    )
 
     if not INSTAGRAM_ACCESS_TOKEN:
 
@@ -826,17 +846,67 @@ def check_instagram_credentials():
         )
 
     print(
-        "Instagram credentials found."
+        "Instagram secrets are present."
     )
+
+
+def verify_instagram_user():
+
+    print()
+    print(
+        "Verifying Instagram User ID..."
+    )
+
+    url = instagram_url(
+        INSTAGRAM_USER_ID
+    )
+
+    params = {
+        "fields": "id,username",
+        "access_token": INSTAGRAM_ACCESS_TOKEN
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=60
+    )
+
+    if response.status_code != 200:
+
+        print(
+            "Instagram verification failed:"
+        )
+
+        print(
+            response.text
+        )
+
+        raise RuntimeError(
+            "Instagram User ID or access token "
+            "could not be verified."
+        )
+
+    data = response.json()
+
+    print(
+        "Instagram User ID:",
+        data.get("id")
+    )
+
+    print(
+        "Instagram username:",
+        data.get("username")
+    )
+
+    return data
 
 
 # ============================================================
 # CREATE REEL CONTAINER
 # ============================================================
 
-def create_reel_container(
-    caption
-):
+def create_reel_container(caption):
 
     print()
     print(
@@ -864,7 +934,10 @@ def create_reel_container(
     if response.status_code != 200:
 
         print(
-            "Instagram container error:",
+            "Instagram container error:"
+        )
+
+        print(
             response.text
         )
 
@@ -888,13 +961,14 @@ def create_reel_container(
         )
 
     print(
-        "Instagram container:",
+        "Instagram container created:",
         container_id
     )
 
     if upload_uri:
+
         print(
-            "Instagram returned upload URI."
+            "Instagram upload URI received."
         )
 
     return (
@@ -904,7 +978,7 @@ def create_reel_container(
 
 
 # ============================================================
-# UPLOAD VIDEO TO INSTAGRAM
+# UPLOAD REEL VIDEO
 # ============================================================
 
 def upload_video_to_instagram(
@@ -925,7 +999,7 @@ def upload_video_to_instagram(
 
     print()
     print(
-        "Uploading Reel to Instagram..."
+        "Uploading Reel video to Instagram..."
     )
 
     if upload_uri:
@@ -936,7 +1010,8 @@ def upload_video_to_instagram(
 
         upload_url = (
             "https://rupload.facebook.com/"
-            f"ig-api-upload/{API_VERSION}/"
+            "ig-api-upload/"
+            f"{API_VERSION}/"
             f"{container_id}"
         )
 
@@ -966,20 +1041,23 @@ def upload_video_to_instagram(
             timeout=300
         )
 
-    if response.status_code not in [
+    if response.status_code not in {
         200,
         201
-    ]:
+    }:
 
         print(
-            "Instagram video upload error:",
+            "Instagram upload error:"
+        )
+
+        print(
             response.text
         )
 
         response.raise_for_status()
 
     print(
-        "Video uploaded to Instagram successfully."
+        "Video upload completed."
     )
 
     print(
@@ -989,12 +1067,10 @@ def upload_video_to_instagram(
 
 
 # ============================================================
-# CHECK INSTAGRAM CONTAINER
+# WAIT FOR INSTAGRAM PROCESSING
 # ============================================================
 
-def wait_for_container(
-    container_id
-):
+def wait_for_container(container_id):
 
     print()
     print(
@@ -1006,344 +1082,15 @@ def wait_for_container(
     )
 
     params = {
-        "fields":
-            "status_code,status",
-        "access_token":
-            INSTAGRAM_ACCESS_TOKEN
+        "fields": "status_code,status",
+        "access_token": INSTAGRAM_ACCESS_TOKEN
     }
 
-    # Up to 10 minutes.
-    for attempt in range(1, 61):
-
-        response = requests.get(
-            url,
-            params=params,
-            timeout=60
-        )
-
-        if response.status_code != 200:
-
-            print(
-                "Status check error:",
-                response.text
-            )
-
-            response.raise_for_status()
-
-        data = response.json()
-
-        status_code = data.get(
-            "status_code"
-        )
-
-        status_text = data.get(
-            "status",
-            ""
-        )
+    for attempt in range(
+        1,
+        MAX_POLL_ATTEMPTS + 1
+    ):
 
         print(
-            f"Instagram status "
-            f"{attempt}/60:",
-            status_code,
-            status_text
-        )
-
-        if status_code == "FINISHED":
-
-            print(
-                "Instagram Reel is ready to publish."
-            )
-
-            return True
-
-        if status_code == "PUBLISHED":
-
-            print(
-                "Reel is already published."
-            )
-
-            return True
-
-        if status_code in [
-            "ERROR",
-            "EXPIRED"
-        ]:
-
-            raise RuntimeError(
-                "Instagram Reel processing failed: "
-                f"{status_code} - {status_text}"
-            )
-
-        time.sleep(10)
-
-    raise RuntimeError(
-        "Instagram Reel processing timed out."
-    )
-
-
-# ============================================================
-# PUBLISH REEL
-# ============================================================
-
-def publish_reel(
-    container_id
-):
-
-    print()
-    print(
-        "Publishing Reel..."
-    )
-
-    url = instagram_url(
-        f"{INSTAGRAM_USER_ID}/media_publish"
-    )
-
-    payload = {
-        "creation_id":
-            container_id,
-
-        "access_token":
-            INSTAGRAM_ACCESS_TOKEN
-    }
-
-    response = requests.post(
-        url,
-        data=payload,
-        timeout=90
-    )
-
-    if response.status_code != 200:
-
-        print(
-            "Instagram publish error:",
-            response.text
-        )
-
-        response.raise_for_status()
-
-    data = response.json()
-
-    media_id = data.get(
-        "id"
-    )
-
-    if not media_id:
-
-        raise RuntimeError(
-            f"Instagram did not return "
-            f"media ID: {data}"
-        )
-
-    print()
-    print(
-        "========================================"
-    )
-
-    print(
-        "REEL PUBLISHED SUCCESSFULLY"
-    )
-
-    print(
-        "Instagram Media ID:",
-        media_id
-    )
-
-    print(
-        "========================================"
-    )
-
-    return media_id
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print()
-    print(
-        "========================================"
-    )
-
-    print(
-        "PromptVerse India - Daily AI Reel Agent"
-    )
-
-    print(
-        "========================================"
-    )
-
-    check_ffmpeg()
-
-    check_instagram_credentials()
-
-    # --------------------------------------------------------
-    # 1. Generate AI content
-    # --------------------------------------------------------
-
-    content = ask_ai()
-
-    print()
-    print(
-        "TOPIC:",
-        content["topic"]
-    )
-
-    print(
-        "SCRIPT:",
-        content["script"]
-    )
-
-    print(
-        "CAPTION:",
-        content["caption"]
-    )
-
-    print(
-        "HASHTAGS:",
-        content["hashtags"]
-    )
-
-    # --------------------------------------------------------
-    # 2. Save AI content
-    # --------------------------------------------------------
-
-    with open(
-        "content.json",
-        "w",
-        encoding="utf-8"
-    ) as file:
-
-        json.dump(
-            content,
-            file,
-            ensure_ascii=False,
-            indent=2
-        )
-
-    print(
-        "content.json created."
-    )
-
-    # --------------------------------------------------------
-    # 3. Search Wikimedia
-    # --------------------------------------------------------
-
-    topic = content.get(
-        "topic",
-        "technology"
-    )
-
-    video_url = find_video(
-        f"{topic} technology video"
-    )
-
-    if not video_url:
-
-        raise RuntimeError(
-            "No suitable Wikimedia video "
-            "under 50 MB was found."
-        )
-
-    # --------------------------------------------------------
-    # 4. Download source
-    # --------------------------------------------------------
-
-    source_file = download_video(
-        video_url
-    )
-
-    if not source_file:
-
-        raise RuntimeError(
-            "Could not download source video."
-        )
-
-    # --------------------------------------------------------
-    # 5. Create final Reel
-    # --------------------------------------------------------
-
-    reel_file = create_reel(
-        source_file
-    )
-
-    # --------------------------------------------------------
-    # 6. Final 50 MB safety check
-    # --------------------------------------------------------
-
-    final_size = os.path.getsize(
-        reel_file
-    )
-
-    print(
-        "Final Reel:",
-        round(
-            final_size / 1024 / 1024,
-            2
-        ),
-        "MB"
-    )
-
-    if final_size > MAX_VIDEO_BYTES:
-
-        raise RuntimeError(
-            "SAFETY STOP: Reel is above 50 MB."
-        )
-
-    # --------------------------------------------------------
-    # 7. Caption
-    # --------------------------------------------------------
-
-    caption = (
-        content["caption"].strip()
-        + "\n\n"
-        + content["hashtags"].strip()
-    )
-
-    # --------------------------------------------------------
-    # 8. Create Instagram container
-    # --------------------------------------------------------
-
-    (
-        container_id,
-        upload_uri
-    ) = create_reel_container(
-        caption
-    )
-
-    # --------------------------------------------------------
-    # 9. Upload video
-    # --------------------------------------------------------
-
-    upload_video_to_instagram(
-        reel_file,
-        container_id,
-        upload_uri
-    )
-
-    # --------------------------------------------------------
-    # 10. Wait for processing
-    # --------------------------------------------------------
-
-    wait_for_container(
-        container_id
-    )
-
-    # --------------------------------------------------------
-    # 11. Publish
-    # --------------------------------------------------------
-
-    publish_reel(
-        container_id
-    )
-
-    print()
-    print(
-        "Daily AI Reel automation completed."
-    )
-
-
-if __name__ == "__main__":
-
-    main()
+            f"Processing check "
+            f"{attempt
