@@ -18,24 +18,37 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install Python dependencies
+      - name: Install Dependencies
         run: |
           pip install -r requirements.txt
+
+      - name: Check Instagram Configuration
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+        run: |
+          if [ -z "$INSTAGRAM_ACCESS_TOKEN" ]; then
+            echo "ERROR: INSTAGRAM_ACCESS_TOKEN secret is missing."
+            exit 1
+          fi
+
+          if [ -z "$INSTAGRAM_USER_ID" ]; then
+            echo "ERROR: INSTAGRAM_USER_ID secret is missing."
+            exit 1
+          fi
+
+          echo "Instagram credentials are loaded."
 
       - name: Run Reel Agent with Automatic Retry
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
         run: |
-          for i in 1 2 3 4
-          do
+          for i in 1 2 3 4; do
             python main.py && exit 0
             echo "Attempt $i failed. Retrying..."
             sleep $((i * 30))
           done
+
           exit 1
