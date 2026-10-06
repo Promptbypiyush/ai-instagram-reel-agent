@@ -1,602 +1,257 @@
-import os
-import sys
-import json
-import time
-import shutil
-import subprocess
-import textwrap
+import os,time,json,random,subprocess,requests
 from pathlib import Path
+from PIL import Image,ImageDraw,ImageFont
 
-import requests
-from PIL import Image, ImageDraw, ImageFont
+G=os.getenv("GEMINI_API_KEY")
+IG=os.getenv("INSTAGRAM_ACCESS_TOKEN")
+UID=os.getenv("INSTAGRAM_USER_ID")
+HOST=os.getenv("INSTAGRAM_API_HOST","graph.facebook.com")
+VER=os.getenv("META_API_VERSION","v25.0")
+MODEL=os.getenv("GEMINI_MODEL","gemini-3.8-flash")
+WORK=Path("reel_work")
+WORK.mkdir(exist_ok=True)
 
+if not G or not IG or not UID:
+    raise RuntimeError("Missing GEMINI_API_KEY / INSTAGRAM_ACCESS_TOKEN / INSTAGRAM_USER_ID")
 
-# ============================================================
-# CONFIG
-# ============================================================
+def post(url,data=None,timeout=120,headers=None):
+    for n in range(6):
+        try:
+            r=requests.post(url,data=data,headers=headers,timeout=timeout)
+            if r.status_code not in (429,500,502,503,504): return r
+            print("Retry:",r.status_code,flush=True)
+        except Exception as e:
+            print("Retry:",e,flush=True)
+        time.sleep(min(60,5*(2**n)))
+    r=requests.post(url,data=data,headers=headers,timeout=180)
+    return r
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
-IG_ID = os.getenv("INSTAGRAM_USER_ID")
+def gemini(prompt,model=None):
+    models=[model or MODEL,"gemini-3.8-flash","gemini-3.7-flash","gemini-3.6-flash"]
+    seen=[]
+    for m in models:
+        if m in seen: continue
+        seen.append(m)
+        url=f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        body={"contents":[{"parts":[{"text":prompt}]}]}
+        for n in range(5):
+            try:
+                r=requests.post(
+                    url,
+                    params={"key":G},
+                    json=body,
+                    timeout=120
+                )
+                if r.ok:
+                    x=r.json()
+                    return x["candidates"][0]["content"]["parts"][0]["text"].strip()
+                print("Gemini",m,"error",r.status_code,flush=True)
+                if r.status_code not in (429,500,502,503,504):
+                    break
+            except Exception as e:
+                print("Gemini retry:",e,flush=True)
+            time.sleep(min(60,5*(2**n)))
+    return ""
 
-HOST = os.getenv("INSTAGRAM_API_HOST", "graph.facebook.com")
-VER = os.getenv("META_API_VERSION", "v25.0")
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+def tts(text,out):
+    models=["gemini-3.8-flash-tts","gemini-3.8-flash-lite-tts"]
+    for m in models:
+        url=f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent"
+        body={
+            "contents":[{
+                "role":"user",
+                "parts":[{
+                    "text":text,
+                    "speech_metadata":{
+                        "style":"natural energetic Hindi Instagram Reel narration, clear and engaging"
+                    }
+                }]
+            }],
+            "generationConfig":{
+                "responseModalities":["AUDIO"],
+                "speechConfig":{
+                    "voiceConfig":{"voice":"Kore"}
+                }
+            }
+        }
+        for n in range(4):
+            try:
+                r=requests.post(url,params={"key":G},json=body,timeout=180)
+                if r.ok:
+                    p=r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+                    import base64
+                    Path(out).write_bytes(base64.b64decode(p))
+                    return True
+                print("TTS error",r.status_code,flush=True)
+            except Exception as e:
+                print("TTS retry:",e,flush=True)
+            time.sleep(min(45,5*(2**n)))
+    return False
 
-OUTPUT = "reel.mp4"
-AUDIO = "voice.mp3"
-WORK = Path("reel_assets")
+def local_voice(text,out):
+    try:
+        subprocess.run(
+            ["espeak-ng","-v","hi","-s","155","-w",out,text],
+            check=True,timeout=60
+        )
+        return True
+    except:
+        return False
 
-MAX_BYTES = 50 * 1024 * 1024
-REEL_SECONDS = 15
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def run(cmd):
-    print("\nRunning:", " ".join(cmd), flush=True)
-
-    r = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
-    )
-
-    print(r.stdout, flush=True)
-
-    if r.returncode != 0:
-        raise RuntimeError("Command failed")
-
-
-def api_url(path):
-    return f"https://{HOST}/{VER}/{path}"
-
-
-def font(size, bold=False):
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if bold else
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+def font(size):
+    for p in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
-        if bold else
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
-    ]
-
-    for p in paths:
+    ]:
         if os.path.exists(p):
-            return ImageFont.truetype(p, size)
-
+            return ImageFont.truetype(p,size)
     return ImageFont.load_default()
 
+def make_frame(title,body,num):
+    im=Image.new("RGB",(1080,1920),(12,15,25))
+    d=ImageDraw.Draw(im)
+    f1,f2=font(76),font(48)
+    d.text((70,100),title,fill="white",font=f1)
+    y=360
+    words=body.split()
+    line=""
+    for w in words:
+        test=(line+" "+w).strip()
+        if d.textbbox((0,0),test,font=f2)[2]>900:
+            d.text((70,y),line,fill="white",font=f2)
+            y+=75
+            line=w
+        else:
+            line=test
+    if line:d.text((70,y),line,fill="white",font=f2)
+    d.text((70,1770),f"PROMPTVERSE INDIA • {num}/3",fill="white",font=font(32))
+    path=WORK/f"frame{num}.jpg"
+    im.save(path,quality=95)
+    return path
 
-def draw_text(draw, value, fnt, width, y, chars=20):
-    lines = textwrap.wrap(str(value), width=chars)
-
-    for line in lines:
-        box = draw.textbbox((0, 0), line, font=fnt)
-        tw = box[2] - box[0]
-        x = (width - tw) // 2
-
-        draw.text(
-            (x, y),
-            line,
-            font=fnt,
-            fill="white",
-            stroke_width=2,
-            stroke_fill="black"
-        )
-
-        y += int(fnt.size * 1.25)
-
-
-# ============================================================
-# GEMINI
-# ============================================================
-
-def generate_content():
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY secret missing")
-
-    prompt = """
-Create ONE useful Instagram Reel about AI, AI tools,
-AI prompts, AI photo editing, AI video tricks,
-productivity with AI, or useful AI websites.
-
-Return ONLY valid JSON:
-
-{
-  "topic": "short topic",
-  "script": "short Roman Hinglish voice script",
-  "caption": "Instagram caption",
-  "hashtags": "#AITools #AIHacks #PromptVerseIndia"
-}
-
-Rules:
-- Roman Hinglish only.
-- No Devanagari.
-- Script must be short enough for about 15 seconds.
-- Write naturally so a Hindi AI voice can speak it.
-- Useful and engaging for Indian viewers.
-- No fake claims.
-- No markdown.
-- Nothing outside JSON.
-"""
-
-    url = (
-        "https://generativelanguage.googleapis.com/"
-        "v1beta/models/"
-        + MODEL
-        + ":generateContent"
-    )
-
-    r = requests.post(
-        url,
-        params={"key": GEMINI_API_KEY},
-        json={
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ]
-        },
-        timeout=90
-    )
-
-    r.raise_for_status()
-
-    value = (
-        r.json()["candidates"][0]
-        ["content"]["parts"][0]["text"]
-        .strip()
-    )
-
-    value = (
-        value
-        .replace("```json", "")
-        .replace("```", "")
-        .strip()
-    )
-
-    data = json.loads(value)
-
-    for key in [
-        "topic",
-        "script",
-        "caption",
-        "hashtags"
-    ]:
-        if not data.get(key):
-            raise RuntimeError(
-                f"Gemini missing {key}"
-            )
-
-    print("\nTOPIC:", data["topic"])
-    print("SCRIPT:", data["script"])
-
-    return data
-
-
-# ============================================================
-# AI VOICE
-# ============================================================
-
-def install_voice_package():
-    try:
-        import edge_tts
-        return edge_tts
-    except ImportError:
-        print("\nInstalling edge-tts...", flush=True)
-
-        subprocess.check_call([
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "-q",
-            "edge-tts"
-        ])
-
-        import edge_tts
-        return edge_tts
-
-
-def create_voice(script):
-    edge_tts = install_voice_package()
-
-    print("\nCreating Hindi AI voice...", flush=True)
-
-    async def make():
-        communicate = edge_tts.Communicate(
-            script,
-            "hi-IN-SwaraNeural",
-            rate="+5%",
-            volume="+0%"
-        )
-
-        await communicate.save(AUDIO)
-
-    import asyncio
-    asyncio.run(make())
-
-    if not os.path.exists(AUDIO):
-        raise RuntimeError("AI voice was not created")
-
-    print("AI voice created successfully.", flush=True)
-
-    return AUDIO
-
-
-# ============================================================
-# VISUALS
-# ============================================================
-
-def create_frames(data):
-    if WORK.exists():
-        shutil.rmtree(WORK)
-
-    WORK.mkdir(parents=True, exist_ok=True)
-
-    W, H = 1080, 1920
-
-    title = font(76, True)
-    script_font = font(50, True)
-    small = font(34)
-
-    items = [
-        (
-            (12, 18, 45),
-            (70, 25, 100),
-            data["topic"],
-            title,
-            18
-        ),
-        (
-            (15, 40, 50),
-            (10, 90, 90),
-            data["script"],
-            script_font,
-            22
-        ),
-        (
-            (45, 18, 15),
-            (105, 35, 60),
-            "SAVE THIS REEL\n\nMore AI tips daily",
-            title,
-            18
-        )
+def video(frames,audio,out):
+    lst=WORK/"list.txt"
+    with open(lst,"w") as f:
+        for x in frames:
+            f.write(f"file '{Path(x).resolve()}'\n")
+            f.write("duration 5\n")
+        f.write(f"file '{Path(frames[-1]).resolve()}'\n")
+    cmd=[
+        "ffmpeg","-y","-f","concat","-safe","0","-i",str(lst),
+        "-i",str(audio),"-t","15",
+        "-vf","scale=1080:1920:force_original_aspect_ratio=decrease,"
+              "pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+        "-r","30","-c:v","libx264","-preset","veryfast",
+        "-pix_fmt","yuv420p","-c:a","aac","-b:a","128k",
+        "-shortest",str(out)
     ]
+    subprocess.run(cmd,check=True,timeout=180)
 
-    frames = []
-
-    for i, (top, bottom, message, fnt, chars) in enumerate(
-        items,
-        1
-    ):
-        img = Image.new(
-            "RGB",
-            (W, H),
-            top
-        )
-
-        draw = ImageDraw.Draw(img)
-
-        for y in range(H):
-            ratio = y / (H - 1)
-
-            color = tuple(
-                int(
-                    top[k] * (1 - ratio)
-                    + bottom[k] * ratio
-                )
-                for k in range(3)
-            )
-
-            draw.line(
-                (0, y, W, y),
-                fill=color
-            )
-
-        draw.text(
-            (55, 80),
-            "PROMPTVERSE INDIA",
-            font=small,
-            fill="white"
-        )
-
-        draw_text(
-            draw,
-            message,
-            fnt,
-            W,
-            500,
-            chars
-        )
-
-        path = WORK / f"frame{i}.png"
-
-        img.save(path)
-        frames.append(str(path))
-
-    return frames
-
-
-# ============================================================
-# VIDEO + VOICE
-# ============================================================
-
-def create_video(frames, audio):
-    print("\nCreating final Reel with AI voice...", flush=True)
-
-    silent_video = str(WORK / "silent.mp4")
-
-    run([
-        "ffmpeg",
-        "-y",
-
-        "-loop", "1",
-        "-t", "5",
-        "-i", frames[0],
-
-        "-loop", "1",
-        "-t", "5",
-        "-i", frames[1],
-
-        "-loop", "1",
-        "-t", "5",
-        "-i", frames[2],
-
-        "-filter_complex",
-        "[0:v]scale=1080:1920,"
-        "setsar=1[v0];"
-        "[1:v]scale=1080:1920,"
-        "setsar=1[v1];"
-        "[2:v]scale=1080:1920,"
-        "setsar=1[v2];"
-        "[v0][v1][v2]"
-        "concat=n=3:v=1:a=0,"
-        "format=yuv420p[v]",
-
-        "-map", "[v]",
-        "-t", "15",
-
-        "-r", "30",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-b:v", "2200k",
-
-        silent_video
-    ])
-
-    run([
-        "ffmpeg",
-        "-y",
-
-        "-i", silent_video,
-        "-i", audio,
-
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-b:a", "128k",
-
-        "-t", "15",
-
-        "-shortest",
-
-        "-movflags", "+faststart",
-
-        OUTPUT
-    ])
-
-    if not os.path.exists(OUTPUT):
-        raise RuntimeError("Final Reel was not created")
-
-    size = os.path.getsize(OUTPUT)
-
-    print(
-        "\nFinal Reel:",
-        round(size / 1024 / 1024, 2),
-        "MB"
-    )
-
-    if size > MAX_BYTES:
-        raise RuntimeError("Reel is over 50 MB")
-
-
-# ============================================================
-# INSTAGRAM
-# ============================================================
-
-def create_container(caption):
-    if not TOKEN:
-        raise RuntimeError(
-            "INSTAGRAM_ACCESS_TOKEN missing"
-        )
-
-    if not IG_ID:
-        raise RuntimeError(
-            "INSTAGRAM_USER_ID missing"
-        )
-
-    if not str(IG_ID).isdigit():
-        raise RuntimeError(
-            "INSTAGRAM_USER_ID must be numeric"
-        )
-
-    r = requests.post(
-        api_url(f"{IG_ID}/media"),
+def instagram(video,caption):
+    base=f"https://{HOST}/{VER}"
+    r=post(
+        f"{base}/{UID}/media",
         data={
-            "media_type": "REELS",
-            "upload_type": "resumable",
-            "caption": caption,
-            "share_to_feed": "true",
-            "access_token": TOKEN
+            "media_type":"REELS",
+            "video_url":upload_public_url(video),
+            "caption":caption,
+            "access_token":IG
         },
-        timeout=60
+        timeout=120
     )
+    if not r.ok:
+        raise RuntimeError("Instagram container error: "+r.text)
+    cid=r.json()["id"]
 
-    r.raise_for_status()
-
-    data = r.json()
-
-    if not data.get("id"):
-        raise RuntimeError(
-            f"Instagram container error: {data}"
-        )
-
-    if not data.get("uri"):
-        raise RuntimeError(
-            f"Instagram upload URI missing: {data}"
-        )
-
-    return data["id"], data["uri"]
-
-
-def upload_video(upload_uri):
-    print("\nUploading Reel to Instagram...", flush=True)
-
-    size = os.path.getsize(OUTPUT)
-
-    with open(OUTPUT, "rb") as f:
-        r = requests.post(
-            upload_uri,
-            headers={
-                "Authorization": f"OAuth {TOKEN}",
-                "offset": "0",
-                "file_size": str(size)
-            },
-            data=f,
-            timeout=600
-        )
-
-    r.raise_for_status()
-
-    print("Video uploaded.", flush=True)
-
-
-def wait_for_processing(container_id):
-    print(
-        "\nWaiting for Instagram processing...",
-        flush=True
-    )
-
-    for _ in range(40):
-        r = requests.get(
-            api_url(container_id),
+    for i in range(40):
+        q=requests.get(
+            f"{base}/{cid}",
             params={
-                "fields": "status_code",
-                "access_token": TOKEN
+                "fields":"status_code,status",
+                "access_token":IG
             },
             timeout=60
         )
-
-        r.raise_for_status()
-
-        status = r.json().get("status_code")
-
-        print("Status:", status, flush=True)
-
-        if status == "FINISHED":
-            return
-
-        if status in [
-            "ERROR",
-            "EXPIRED"
-        ]:
-            raise RuntimeError(
-                "Instagram processing failed"
-            )
-
+        x=q.json()
+        print("Instagram:",x,flush=True)
+        if x.get("status_code")=="FINISHED": break
+        if x.get("status_code")=="ERROR":
+            raise RuntimeError("Instagram processing failed: "+str(x))
         time.sleep(15)
+    else:
+        raise RuntimeError("Instagram processing timeout")
 
+    r=post(
+        f"{base}/{UID}/media_publish",
+        data={"creation_id":cid,"access_token":IG},
+        timeout=120
+    )
+    if not r.ok:
+        raise RuntimeError("Publish error: "+r.text)
+    print("REEL PUBLISHED:",r.text,flush=True)
+
+def upload_public_url(video):
+    # Existing workflow should provide REEL_VIDEO_URL if it already uploads files.
+    # If not available, fail clearly instead of silently publishing the wrong file.
+    u=os.getenv("REEL_VIDEO_URL")
+    if u:return u
     raise RuntimeError(
-        "Instagram processing timeout"
+        "REEL_VIDEO_URL is not set. Instagram requires the video to be reachable "
+        "from the internet before /media can create the Reel container."
     )
-
-
-def publish(container_id):
-    print("\nPublishing Reel...", flush=True)
-
-    r = requests.post(
-        api_url(f"{IG_ID}/media_publish"),
-        data={
-            "creation_id": container_id,
-            "access_token": TOKEN
-        },
-        timeout=60
-    )
-
-    r.raise_for_status()
-
-    print(
-        "\n================================",
-        flush=True
-    )
-
-    print(
-        "REEL POSTED SUCCESSFULLY!",
-        flush=True
-    )
-
-    print(
-        r.json(),
-        flush=True
-    )
-
-    print(
-        "================================",
-        flush=True
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main():
-    print("\nPROMPTVERSE INDIA AUTO REEL BOT")
+    print("PROMPTVERSE INDIA AUTO REEL BOT",flush=True)
 
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg is not installed")
+    prompt="""
+Create one viral Hindi Instagram Reel package.
+Return ONLY valid JSON:
+{
+ "topic":"short topic",
+ "script":"Hindi narration around 45-70 words",
+ "caption":"short Hindi caption",
+ "hashtags":["#reels","#viral","#ai","#india","#trending"]
+}
+Make it interesting, factual or entertaining, and suitable for a general audience.
+"""
+    raw=gemini(prompt)
 
-    content = generate_content()
+    try:
+        raw=raw.replace("```json","").replace("```","").strip()
+        data=json.loads(raw)
+    except:
+        data={
+            "topic":"AI की एक मजेदार और काम की जानकारी",
+            "script":"क्या आपको पता है कि आज AI कितनी तेजी से हमारी रोजमर्रा की जिंदगी बदल रहा है? छोटे-छोटे काम से लेकर वीडियो बनाने तक, AI अब कई काम सेकंडों में कर सकता है। लेकिन सबसे जरूरी बात है कि इसका इस्तेमाल समझदारी से किया जाए।",
+            "caption":"AI की दुनिया सच में तेजी से बदल रही है! 🤯",
+            "hashtags":["#reels","#viral","#ai","#india","#trending"]
+        }
 
-    frames = create_frames(content)
+    topic=str(data.get("topic","AI")).strip()
+    script=str(data.get("script","")).strip()
+    caption=str(data.get("caption","")).strip()
+    tags=data.get("hashtags",["#reels","#viral","#ai","#india","#trending"])
+    tags=" ".join(str(x) for x in tags[:5])
 
-    audio = create_voice(
-        content["script"]
-    )
+    print("TOPIC:",topic,flush=True)
 
-    create_video(
-        frames,
-        audio
-    )
+    audio=WORK/"voice.wav"
+    if not tts(script,str(audio)):
+        print("Gemini TTS failed; trying local voice...",flush=True)
+        if not local_voice(script,str(audio)):
+            raise RuntimeError("Voice generation failed")
 
-    caption = (
-        str(content["caption"]).strip()
-        + "\n\n"
-        + str(content["hashtags"]).strip()
-    )
+    frames=[
+        make_frame(topic,script[:250],1),
+        make_frame(topic,script[250:500] or script,2),
+        make_frame(topic,script[500:] or script,3)
+    ]
 
-    container_id, upload_uri = create_container(
-        caption
-    )
+    mp4=WORK/"reel.mp4"
+    video(frames,audio,mp4)
 
-    upload_video(upload_uri)
+    final_caption=f"{caption}\n\n{tags}"
+    instagram(mp4,final_caption)
 
-    wait_for_processing(container_id)
-
-    publish(container_id)
-
-    print("\nALL DONE.")
-
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
